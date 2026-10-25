@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `web_search` takes an optional `model` to pick the search model for one call, for example `provider: "openai", model: "gpt-6-luna"`, without changing your config. It works with the OpenAI, xAI, Mistral, and Gemini providers, and only when you name exactly one of them as `provider`. If that model fails, you get the error; the search is not retried with a different model or provider.
+
 ## [0.44.0] - 2026-10-20
 
 ### Highlights

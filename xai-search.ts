@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { normalizeSearchModelOverride, searchModelFailure, searchModelSuccess } from "./search-model.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { activityMonitor } from "./activity.ts";
 import { normalizeDomain } from "./domain-filter-normalization.ts";
@@ -167,7 +166,7 @@ async function resolvePiAuth(
 
 export async function resolveXaiAuth(ctx?: ExtensionContext, signal?: AbortSignal, model?: string): Promise<XaiAuth | undefined> {
 	const config = loadConfig();
-	const modelOverride = normalizeSearchModelOverride(model) ?? resolveConfiguredSearchModel(config.xaiSearchModel);
+	const modelOverride = model ?? resolveConfiguredSearchModel(config.xaiSearchModel);
 	const tools = resolveConfiguredSearchTools(config.xaiSearchTools);
 	if (ctx && resolveConfiguredResponsesUrl(config.xaiResponsesUrl) === undefined) {
 		const auth = await resolvePiAuth(ctx, modelOverride, tools);
@@ -364,16 +363,11 @@ export async function searchWithXai(
 	options: SearchOptions = {},
 	ctx?: ExtensionContext,
 ): Promise<SearchResponse> {
-	const model = normalizeSearchModelOverride(options.model);
-	if (model !== undefined) {
-		options = { ...options, model };
-		options.signal?.throwIfAborted();
-	}
 	const config = loadConfig();
 	const tools = resolveConfiguredSearchTools(config.xaiSearchTools);
 	const customUrl = resolveConfiguredResponsesUrl(config.xaiResponsesUrl);
 	const timeoutMs = resolveConfiguredSearchTimeoutMs(config.xaiSearchTimeoutMs);
-	const auth = await resolveXaiAuth(ctx, options.signal, model);
+	const auth = await resolveXaiAuth(ctx, options.signal, options.model);
 	if (!auth) {
 		if (customUrl) {
 			throw new Error(
@@ -430,7 +424,7 @@ export async function searchWithXai(
 		}
 
 		activityMonitor.logComplete(activityId, response.status);
-		return { answer, results, ...searchModelSuccess(model, auth.model, parsed.model) };
+		return { answer, results };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		const redactedMessage = redactCredential(message, auth.apiKey);
@@ -439,9 +433,9 @@ export async function searchWithXai(
 		} else {
 			activityMonitor.logError(activityId, redactedMessage);
 		}
-		if (redactedMessage === message) throw searchModelFailure(err, "xai", model, auth.model);
+		if (redactedMessage === message) throw err;
 		const redactedError = new Error(redactedMessage);
 		if (err instanceof Error) redactedError.name = err.name;
-		throw searchModelFailure(redactedError, "xai", model, auth.model);
+		throw redactedError;
 	}
 }

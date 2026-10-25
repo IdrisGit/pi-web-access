@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { normalizeSearchModelOverride, searchModelFailure, searchModelSuccess } from "./search-model.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { activityMonitor } from "./activity.ts";
 import { normalizeDomain } from "./domain-filter-normalization.ts";
@@ -335,7 +334,7 @@ export async function resolveOpenAIAuth(ctx?: ExtensionContext, signal?: AbortSi
 	const config = loadConfig();
 	const responsesUrl = resolveConfiguredResponsesUrl(config.openaiResponsesUrl);
 	const useProviderBaseUrl = resolveUseProviderBaseUrl(config);
-	const modelOverride = normalizeSearchModelOverride(model) ?? resolveConfiguredSearchModel(config.openaiSearchModel);
+	const modelOverride = model ?? resolveConfiguredSearchModel(config.openaiSearchModel);
 	const providers = resolveConfiguredSearchProviders(config.openaiSearchProviders);
 	if (ctx) {
 		const auth = await resolvePiAuth(ctx, responsesUrl, providers, modelOverride, config.openaiResponsesUrl !== undefined, useProviderBaseUrl);
@@ -703,7 +702,6 @@ async function parseAlphaSearchResponse(response: Response, numResults = 5): Pro
 	}
 	return {
 		answer,
-		...(typeof record.model === "string" ? { returnedModel: record.model } : {}),
 		results: typeof numResults === "number" && Number.isFinite(numResults) && numResults > 0
 			? results.slice(0, Math.min(Math.floor(numResults), 20))
 			: results,
@@ -772,8 +770,7 @@ async function runOpenAISearch(
 		if (useAlphaSearch) {
 			const result = await parseAlphaSearchResponse(response, options.numResults);
 			activityMonitor.logComplete(activityId, response.status);
-			const { returnedModel, ...content } = result;
-			return { ...content, ...searchModelSuccess(options.model, auth.model, returnedModel) };
+			return result;
 		}
 		const parsed = await parseOpenAIResponse(response);
 		const output = Array.isArray(parsed.payload.output) ? parsed.payload.output : [];
@@ -786,7 +783,7 @@ async function runOpenAISearch(
 		}
 
 		activityMonitor.logComplete(activityId, response.status);
-		return { answer, results, ...searchModelSuccess(options.model, auth.model, parsed.payload.model) };
+		return { answer, results };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		const redactedMessage = redactCredential(message, auth.apiKey);
@@ -795,10 +792,10 @@ async function runOpenAISearch(
 		} else {
 			activityMonitor.logError(activityId, redactedMessage);
 		}
-		if (redactedMessage === message) throw searchModelFailure(err, "openai", options.model, auth.model);
+		if (redactedMessage === message) throw err;
 		const redactedError = new Error(redactedMessage);
 		if (err instanceof Error) redactedError.name = err.name;
-		throw searchModelFailure(redactedError, "openai", options.model, auth.model);
+		throw redactedError;
 	}
 }
 
@@ -807,12 +804,7 @@ export async function searchWithOpenAI(
 	options: SearchOptions = {},
 	ctx?: ExtensionContext,
 ): Promise<SearchResponse> {
-	const model = normalizeSearchModelOverride(options.model);
-	if (model !== undefined) {
-		options = { ...options, model };
-		options.signal?.throwIfAborted();
-	}
-	const auth = await resolveOpenAIAuth(ctx, options.signal, model);
+	const auth = await resolveOpenAIAuth(ctx, options.signal, options.model);
 	if (!auth) {
 		throw new Error(
 			"OpenAI web search unavailable. Either:\n" +

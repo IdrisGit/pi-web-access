@@ -4,7 +4,6 @@
 
 import type { FindMode } from "./content-find.ts";
 import type { RecencyFilter } from "./source-check.ts";
-import type { SearchModelMetadata } from "./search-model.ts";
 
 export type WebToolContent =
 	| { type: "text"; text: string }
@@ -21,7 +20,7 @@ export interface WebToolResult {
 export type WebSearchStructuredContent = {
 	responseId: string;
 	fetchId: string | null;
-	queries: Array<SearchModelMetadata & {
+	queries: Array<{
 		query: string;
 		answer: string;
 		error: string | null;

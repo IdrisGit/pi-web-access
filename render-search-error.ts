@@ -19,9 +19,7 @@
  *   // expanded:  plan.expanded
  */
 
-import { formatSearchModel, type SearchModelMetadata } from "./search-model.ts";
-
-export interface CancelledQueryDetail extends SearchModelMetadata {
+export interface CancelledQueryDetail {
 	query: string;
 	provider: string | null;
 	error: string | null; // null = completed ok; string = per-query error
@@ -128,8 +126,6 @@ export function buildSearchErrorPlan(details: SearchErrorDetails | undefined | n
 				? `\u2014 ${truncate(q.error, 60)}`
 				: `\u2014 ${q.resultCount} source${q.resultCount === 1 ? "" : "s"}`;
 			expanded.push(`  ${tag}"${dq}"${provider} ${tail}`);
-			const model = formatSearchModel(q);
-			if (model) expanded.push(`    search model: ${model}`);
 		}
 	}
 

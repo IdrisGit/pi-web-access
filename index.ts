@@ -1,12 +1,12 @@
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text, truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Type, type TOptional, type TString } from "typebox";
 import type { ExtractedContent } from "./extract.ts";
 import { normalizeFetchContentParams } from "./fetch-params.ts";
 import { answerFromPage } from "./page-query.ts";
 import { rewriteSearchQuery } from "./query-rewrite.ts";
 import { clearCloneCache, releaseClonesUnusedSince, touchClones } from "./github-extract.ts";
-import { ALL_SEARCH_PROVIDERS, getAllowedSearchProviders, getConfiguredSearchRouting, providerLabel, RESOLVED_SEARCH_PROVIDERS, search, validateSearchModelOverride, type AttributedSearchResponse, type ProviderAvailability, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
+import { ALL_SEARCH_PROVIDERS, getAllowedSearchProviders, getConfiguredSearchRouting, providerLabel, RESOLVED_SEARCH_PROVIDERS, search, type AttributedSearchResponse, type ProviderAvailability, type SearchProvider, type SearchProviderSelection, type ResolvedSearchProvider } from "./gemini-search.ts";
 export type { ProviderAvailability } from "./gemini-search.ts";
 import { formatSeconds, getWebSearchConfigDir, resolveCuratorNetworkConfig, runWithProxy } from "./utils.ts";
 import {
@@ -78,7 +78,6 @@ import { isZaiAvailable } from "./zai.ts";
 import { isValyuAvailable } from "./valyu.ts";
 import { isXcrawlAvailable } from "./xcrawl.ts";
 import { buildSearchErrorPlan, type SearchErrorDetails, type SearchErrorPlan } from "./render-search-error.ts";
-import { failedSearchModelMetadata, formatSearchModel, searchModelMetadata, type SearchModelMetadata } from "./search-model.ts";
 import { findModelWithProviderRouting, isModelInScope, splitThinkingSuffix } from "./summary-model-scope.ts";
 import { registerCuratorRunLifecycle, resolveWebSearchWorkflow, type WebSearchWorkflow } from "./curator-run.ts";
 import { registerWebToolActivation } from "./tool-activation.ts";
@@ -138,9 +137,6 @@ const webSearchOutputSchema = Type.Object({
 		error: nullableString("Why this query failed, null on success"),
 		provider: Type.Optional(Type.String()),
 		providers: Type.Optional(Type.Array(Type.String())),
-		requestedModel: Type.Optional(Type.String({ description: "Per-call server model ID requested by the caller" })),
-		sentModel: Type.Optional(Type.String({ description: "Model ID sent to the search backend" })),
-		returnedModel: Type.Optional(Type.String({ description: "Backend-reported model ID, not independently verified" })),
 		results: Type.Array(Type.Object({ title: Type.String(), url: Type.String(), snippet: Type.String() })),
 	})),
 });
@@ -309,9 +305,9 @@ function shouldAutoOpenCuratorBrowser(config: WebSearchConfig): boolean {
 	return true;
 }
 
-async function getProviderAvailability(ctx: ExtensionContext, geminiApiOnly = false): Promise<ProviderAvailability> {
+async function getProviderAvailability(ctx: ExtensionContext): Promise<ProviderAvailability> {
 	const allowedProviders = new Set(getAllowedSearchProviders());
-	const geminiWebAvail = allowedProviders.has("gemini") && !geminiApiOnly ? await getOptionalGeminiWebAvailability() : null;
+	const geminiWebAvail = allowedProviders.has("gemini") ? await getOptionalGeminiWebAvailability() : null;
 	const geminiApiAvail = allowedProviders.has("gemini") && isGeminiApiAvailable();
 	const providers = {
 		openai: allowedProviders.has("openai") && await isOpenAISearchAvailable(ctx),
@@ -380,10 +376,9 @@ async function loadCuratorBootstrap(
 	requestedProvider: unknown,
 	ctx: ExtensionContext,
 	options?: Pick<PendingCurate, "numResults" | "recencyFilter">,
-	modelOverride?: string,
 ): Promise<CuratorBootstrap> {
 	const provider = resolveRequestedProvider(requestedProvider);
-	const availableProviders = await getProviderAvailability(ctx, modelOverride !== undefined && provider === "gemini");
+	const availableProviders = await getProviderAvailability(ctx);
 	if (Array.isArray(provider)) availableProviders.all = true;
 	return {
 		availableProviders,
@@ -465,8 +460,6 @@ interface PendingCurate {
 	availableProviders: ProviderAvailability;
 	defaultProvider: SearchProvider;
 	searchProvider: SearchProviderSelection;
-	/** Bound to the original provider; deliberate switches use other providers' defaults. */
-	searchModelOverride?: { provider: ResolvedSearchProvider; model: string };
 	// The provider resolved from config when the call named none; searches still using it may fall back to searchRouting.
 	configDefaultProvider?: SearchProviderSelection;
 	summaryModels: Array<{ value: string; label: string }>;
@@ -626,7 +619,6 @@ function toCuratorSearchEntries(response: AttributedSearchResponse): CuratorSear
 		answer: result.answer,
 		results: result.results.map(source => ({ ...source, domain: extractDomain(source.url) })),
 		provider: result.provider,
-		...searchModelMetadata(result),
 	}));
 	for (const failure of response.providerErrors ?? []) {
 		entries.push({
@@ -650,7 +642,6 @@ function indexedCuratorEntryToQueryResult(entry: IndexedCuratorSearchEntry): Que
 		})),
 		error: entry.error ?? null,
 		provider: entry.provider,
-		...searchModelMetadata(entry),
 	};
 }
 
@@ -753,6 +744,7 @@ export default function (pi: ExtensionAPI) {
 	const allowedSearchProviders = initConfig.webSearch?.allowedProviders === undefined ? RESOLVED_SEARCH_PROVIDERS : getAllowedSearchProviders();
 	const allEligibleProviders = allowedSearchProviders.filter(provider => ALL_SEARCH_PROVIDERS.includes(provider));
 	const allExcludedProviders = allowedSearchProviders.filter(provider => !ALL_SEARCH_PROVIDERS.includes(provider));
+	const modelProviders = allowedSearchProviders.filter(provider => provider === "openai" || provider === "xai" || provider === "mistral" || provider === "gemini");
 	const allPolicyDescription = allEligibleProviders.length === 0
 		? `all has no eligible allowed providers; explicit-only allowed providers (${allExcludedProviders.map(providerLabel).join(", ")}) remain excluded`
 		: allExcludedProviders.length > 0
@@ -943,7 +935,6 @@ export default function (pi: ExtensionAPI) {
 			? partial.queries.map(q => ({
 				query: q.query,
 				provider: q.provider ?? null,
-				...searchModelMetadata(q),
 				error: q.error,
 				resultCount: q.results?.length ?? 0,
 			}))
@@ -1173,7 +1164,6 @@ export default function (pi: ExtensionAPI) {
 					searchProvider: toCuratorProvider(pc.searchProvider) ?? "auto",
 					summaryModels: pc.summaryModels,
 					defaultSummaryModel: pc.defaultSummaryModel,
-					searchModelOverride: pc.searchModelOverride,
 				},
 				{
 					async onSummarize(selectedQueryIndices, summarizeSignal, model, feedback) {
@@ -1265,8 +1255,6 @@ export default function (pi: ExtensionAPI) {
 						if (!normalized || normalized === "auto" || Array.isArray(normalized)) return;
 						pc.defaultProvider = normalized;
 						pc.searchProvider = normalized;
-						// An explicit model invocation must not alter saved search preferences.
-						if (pc.searchModelOverride) return;
 						try {
 							saveConfig({ provider: normalized });
 						} catch (err) {
@@ -1280,7 +1268,6 @@ export default function (pi: ExtensionAPI) {
 							const requestedProvider = resolveCuratorSearchProvider(provider, pc.searchProvider);
 							const response = await search(query, {
 								provider: requestedProvider,
-								model: requestedProvider === pc.searchModelOverride?.provider ? pc.searchModelOverride.model : undefined,
 								providerFromConfig: requestedProvider === pc.configDefaultProvider,
 								numResults: pc.numResults,
 								recencyFilter: pc.recencyFilter,
@@ -1321,13 +1308,12 @@ export default function (pi: ExtensionAPI) {
 			for (const [qi, data] of pc.searchResults) {
 				const slotIndex = pc.resultSlots.get(qi);
 				if (data.error) {
-					handle.pushError(qi, data.error, data.provider, { query: data.query, slotIndex, ...searchModelMetadata(data) });
+					handle.pushError(qi, data.error, data.provider, { query: data.query, slotIndex });
 				} else {
 					handle.pushResult(qi, {
 						answer: data.answer,
 						results: data.results.map(r => ({ ...r, domain: extractDomain(r.url) })),
 						provider: data.provider || pc.defaultProvider,
-						...searchModelMetadata(data),
 						query: data.query,
 						slotIndex,
 					});
@@ -1439,9 +1425,9 @@ export default function (pi: ExtensionAPI) {
 		label: "Web Search",
 		prepareArguments: (args) => parseStringifiedArrays(args, ["provider", "queries", "domainFilter"]) as never,
 		description:
-			`Search the web and return source-linked results or provider answers.${getSearchContentEnabled ? ` Full results are stored for retrieval with ${toolNames.getSearchContent} using the returned responseId.` : ""} For research, prefer queries with 2-4 varied angles over a single query. Omit provider/model for ordinary searches to use existing defaults. When the user explicitly requests a search provider/model, pass its exact server model ID with a single supported provider (openai, xai, mistral, or gemini API). Explicit model failures are errors, never silent model/provider substitutions. This does not switch the conversation or summary model.`,
+			`Search the web and return source-linked results or provider answers.${getSearchContentEnabled ? ` Full results are stored for retrieval with ${toolNames.getSearchContent} using the returned responseId.` : ""} For research, prefer queries with 2-4 varied angles over a single query. Omit provider to use the configured default; set it only to override that.`,
 		promptSnippet:
-			"Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage. Omit provider/model for ordinary searches; use model only for an explicitly requested provider/model. A model requires one of openai, xai, mistral, or gemini (API only), and errors never silently fall back.",
+			"Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage. Omit provider unless explicitly overriding the configured default.",
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
 			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched concurrently (up to three at a time), each returning source-linked search results or a provider answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
@@ -1452,7 +1438,7 @@ export default function (pi: ExtensionAPI) {
 			),
 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude)" })),
 			category: Type.Optional(Type.String({ description: "Exa only: result category, e.g. news, research paper" })),
-			model: Type.Optional(Type.String({ description: "Exact server model ID for this invocation only. Requires an explicit single provider: openai, xai, mistral, or gemini (API only, no browser fallback). No aliases or local catalog requirement. Omit for ordinary searches; use when explicitly requested. Failures do not substitute another model/provider." })),
+			...(modelProviders.length > 0 ? { model: Type.Optional(Type.String({ description: `Model ID for this search; only with provider ${modelProviders.join(", ")}` })) } : {}) as { model: TOptional<TString> },
 			provider: Type.Optional(searchProviderSchema(`Search provider or non-empty list of allowed providers to search simultaneously; ${allPolicyDescription}; omit this field to use the configured provider, or use auto when none is configured`, allowedSearchProviders)),
 			workflow: Type.Optional(
 				StringEnum(["none", "summary-review", "auto-summary"], {
@@ -1469,7 +1455,6 @@ export default function (pi: ExtensionAPI) {
 		async execute(callId, params, signal, onUpdate, ctx) {
 			// Nested calls neither open the curator unless asked nor fetch content in the background.
 			const nested = nestedSearchCallIds.delete(callId);
-			const model = validateSearchModelOverride(params.provider, params.model);
 			return markToolError(await runWithProxy(typeof params.proxy === "string" ? params.proxy : undefined, async () => {
 				const rawQueryList: unknown[] = Array.isArray(params.queries)
 					? params.queries
@@ -1496,6 +1481,13 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 
+				if (shouldCurate && params.model !== undefined) {
+					return {
+						content: [{ type: "text", text: "Error: model cannot be used with workflow \"summary-review\". Pass workflow \"none\" or \"auto-summary\" to search with a specific model." }],
+						details: { error: "model is not supported with summary-review" },
+					};
+				}
+
 				if (shouldCurate) {
 				closeCurator(callId);
 
@@ -1518,11 +1510,9 @@ export default function (pi: ExtensionAPI) {
 				const bootstrap = await loadCuratorBootstrap(requestedProvider, ctx, {
 					numResults: params.numResults,
 					recencyFilter,
-				}, model);
+				});
 				const availableProviders = bootstrap.availableProviders;
-				const defaultProvider = model !== undefined ? requestedProvider as ResolvedSearchProvider : bootstrap.defaultProvider;
-				// Keep the explicit selection retryable even if auth is currently unavailable.
-				if (model !== undefined) availableProviders[defaultProvider as ResolvedSearchProvider] = true;
+				const defaultProvider = bootstrap.defaultProvider;
 				const searchProvider = requestedProvider;
 				const curatorTimeoutSeconds = bootstrap.timeoutSeconds;
 				const curatorWorkflow: CuratorWorkflow = "summary-review";
@@ -1551,7 +1541,6 @@ export default function (pi: ExtensionAPI) {
 					availableProviders,
 					defaultProvider,
 					searchProvider,
-					searchModelOverride: model !== undefined ? { provider: requestedProvider as ResolvedSearchProvider, model } : undefined,
 					configDefaultProvider: providerFromConfig ? searchProvider : undefined,
 					summaryModels: summaryModelChoices.summaryModels,
 					defaultSummaryModel: summaryModelChoices.defaultSummaryModel,
@@ -1604,11 +1593,9 @@ export default function (pi: ExtensionAPI) {
 						details: { phase: "searching", progress: completedSearches / queryList.length, currentQuery: query },
 					});
 					const requestedProvider = pc.searchProvider;
-					const selectedModel = requestedProvider === pc.searchModelOverride?.provider ? pc.searchModelOverride.model : undefined;
 					try {
 						const response = await search(query, {
 							provider: requestedProvider,
-							model: selectedModel,
 							// A provider picked in the curator UI replaces this value and stays strict.
 							providerFromConfig: requestedProvider === pc.configDefaultProvider,
 							numResults: params.numResults,
@@ -1635,7 +1622,7 @@ export default function (pi: ExtensionAPI) {
 							resultSlots.set(resultIndex, qi);
 							if (curator) {
 								if (entry.error) {
-									curator.pushError(resultIndex, entry.error, entry.provider, { query, slotIndex: qi, ...searchModelMetadata(entry) });
+									curator.pushError(resultIndex, entry.error, entry.provider, { query, slotIndex: qi });
 								} else {
 									curator.pushResult(resultIndex, { ...entry, query, slotIndex: qi });
 								}
@@ -1645,11 +1632,11 @@ export default function (pi: ExtensionAPI) {
 						if (signal?.aborted || cancelled || searchAbort.signal.aborted) return;
 						const message = err instanceof Error ? err.message : String(err);
 						const failedProvider = toCuratorProvider(requestedProvider);
-						searchResults.set(qi, { query, answer: "", results: [], error: message, provider: failedProvider, ...failedSearchModelMetadata(err, selectedModel) });
+						searchResults.set(qi, { query, answer: "", results: [], error: message, provider: failedProvider });
 						resultSlots.set(qi, qi);
 						const curator = activeCurators.get(callId);
 						if (curator) {
-							curator.pushError(qi, message, failedProvider, { query, slotIndex: qi, ...failedSearchModelMetadata(err, selectedModel) });
+							curator.pushError(qi, message, failedProvider, { query, slotIndex: qi });
 						}
 					} finally {
 						completedSearches++;
@@ -1761,7 +1748,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderResult(result, { expanded, isPartial }, theme) {
-			type QueryDetail = SearchModelMetadata & {
+			type QueryDetail = {
 				query: string;
 				provider: string | null;
 				answer: string | null;
@@ -1900,8 +1887,6 @@ export default function (pi: ExtensionAPI) {
 					const dq = cq.query.length > 65 ? cq.query.slice(0, 62) + "..." : cq.query;
 					const providerLabel = cq.provider ? ` (${cq.provider})` : "";
 					lines.push(theme.fg("accent", `  "${dq}"${providerLabel}`));
-					const model = formatSearchModel(cq);
-					if (model) lines.push(theme.fg("dim", `  search model: ${model}`));
 
 					if (cq.error) {
 						lines.push(theme.fg("error", `  ${cq.error}`));
