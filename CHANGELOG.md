@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `web_search` takes an optional `model` to pick the search model for one call, for example `provider: "openai", model: "gpt-6-luna"`, without changing your config. It works with the OpenAI, xAI, Mistral, and Gemini providers, and only when you name exactly one of them as `provider`. If that model fails, you get the error; the search is not retried with a different model or provider.
+- `web_search` takes an optional `model` to pick the search model for one call, for example `provider: "openai", model: "gpt-6-luna"`, without changing your config. It works with the OpenAI, xAI, Mistral, and Gemini providers, and only when you name exactly one of them as `provider`. If that model fails, you get the error; the search is not retried with a different model or provider. Thanks to [@IdrisGit](https://github.com/IdrisGit) for [PR #598](https://github.com/nicobailon/pi-web-access/pull/598).
 
 ## [0.44.0] - 2026-10-20
 
