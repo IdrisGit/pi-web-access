@@ -42,7 +42,7 @@ function run(config, body) {
 					requests.push({ url, body: init.body ? JSON.parse(init.body) : null });
 					if (url.includes(":generateContent")) return Response.json({ candidates: [{ content: { parts: [{ text: "Gemini answer" }] } }] });
 					if (url.includes("/conversations")) return Response.json({ outputs: [{ type: "message.output", content: "Mistral answer" }] });
-					return Response.json({ output: [{ type: "message", content: [{ type: "output_text", text: "Responses answer" }] }] });
+					return Response.json({ output: [{ type: "web_search_call" }, { type: "message", content: [{ type: "output_text", text: "Responses answer" }] }] });
 				};
 				const tools = [];
 				(await import(${JSON.stringify(indexUrl)})).default({ registerTool(t) { tools.push(t); }, registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {} });
@@ -63,8 +63,13 @@ const sentModel = request => request.body?.model ?? decodeURIComponent(request.u
 for (const provider of ["openai", "xai", "mistral", "gemini"]) {
 	test(`${provider}: a per-call model overrides the configured model for that call only`, () => {
 		const requests = run({ ...keys, ...configured }, `
-			await tool.execute("a", { query: "q", provider: "${provider}", model: " Exact-ID " });
-			await tool.execute("b", { query: "q", provider: "${provider}" });
+			for (const result of [
+				await tool.execute("a", { query: "q", provider: "${provider}", model: " Exact-ID " }),
+				await tool.execute("b", { query: "q", provider: "${provider}" }),
+			]) {
+				assert.notEqual(result.isError, true, result.content[0].text);
+				assert.match(result.content[0].text, /answer/);
+			}
 		`);
 		assert.deepEqual(requests.map(sentModel), ["Exact-ID", `configured-${provider}`]);
 		if (provider === "gemini") assert.equal(requests[0].url.replace("Exact-ID", "configured-gemini"), requests[1].url);
